@@ -15,6 +15,7 @@
 #define _LINUX_CONSOLE_H_ 1
 
 #include <linux/atomic.h>
+#include <linux/rculist.h>
 #include <linux/types.h>
 
 struct vc_data;
@@ -24,16 +25,12 @@ struct module;
 struct tty_struct;
 struct notifier_block;
 
-/*
- * this is what the terminal answers to a ESC-Z or csi0c query.
- */
-#define VT100ID "\033[?1;2c"
-#define VT102ID "\033[?6c"
-
 enum con_scroll {
 	SM_UP,
 	SM_DOWN,
 };
+
+enum vc_intensity;
 
 /**
  * struct consw - callbacks for consoles
@@ -66,7 +63,6 @@ struct consw {
 	int	(*con_font_get)(struct vc_data *vc, struct console_font *font);
 	int	(*con_font_default)(struct vc_data *vc,
 			struct console_font *font, char *name);
-	int	(*con_font_copy)(struct vc_data *vc, int con);
 	int     (*con_resize)(struct vc_data *vc, unsigned int width,
 			unsigned int height, unsigned int user);
 	void	(*con_set_palette)(struct vc_data *vc,
@@ -74,10 +70,11 @@ struct consw {
 	void	(*con_scrolldelta)(struct vc_data *vc, int lines);
 	int	(*con_set_origin)(struct vc_data *vc);
 	void	(*con_save_screen)(struct vc_data *vc);
-	u8	(*con_build_attr)(struct vc_data *vc, u8 color, u8 intensity,
-			u8 blink, u8 underline, u8 reverse, u8 italic);
+	u8	(*con_build_attr)(struct vc_data *vc, u8 color,
+			enum vc_intensity intensity,
+			bool blink, bool underline, bool reverse, bool italic);
 	void	(*con_invert_region)(struct vc_data *vc, u16 *p, int count);
-	u16    *(*con_screen_pos)(struct vc_data *vc, int offset);
+	u16    *(*con_screen_pos)(const struct vc_data *vc, int offset);
 	unsigned long (*con_getxy)(struct vc_data *vc, unsigned long position,
 			int *px, int *py);
 	/*
@@ -134,7 +131,7 @@ static inline int con_debug_leave(void)
  */
 
 #define CON_PRINTBUFFER	(1)
-#define CON_CONSDEV	(2) /* Last on the command line */
+#define CON_CONSDEV	(2) /* Preferred console, /dev/console */
 #define CON_ENABLED	(4)
 #define CON_BOOT	(8)
 #define CON_ANYTIME	(16) /* Safe to call when cpu is offline */
@@ -153,15 +150,137 @@ struct console {
 	short	flags;
 	short	index;
 	int	cflag;
+	uint	ispeed;
+	uint	ospeed;
+	u64	seq;
+	unsigned long dropped;
 	void	*data;
-	struct	 console *next;
+	struct hlist_node node;
 };
 
-/*
- * for_each_console() allows you to iterate on each console
+#ifdef CONFIG_LOCKDEP
+extern void lockdep_assert_console_list_lock_held(void);
+#else
+static inline void lockdep_assert_console_list_lock_held(void)
+{
+}
+#endif
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+extern bool console_srcu_read_lock_is_held(void);
+#else
+static inline bool console_srcu_read_lock_is_held(void)
+{
+	return 1;
+}
+#endif
+
+extern int console_srcu_read_lock(void);
+extern void console_srcu_read_unlock(int cookie);
+
+extern void console_list_lock(void) __acquires(console_mutex);
+extern void console_list_unlock(void) __releases(console_mutex);
+
+extern struct hlist_head console_list;
+
+/**
+ * console_srcu_read_flags - Locklessly read the console flags
+ * @con:	struct console pointer of console to read flags from
+ *
+ * This function provides the necessary READ_ONCE() and data_race()
+ * notation for locklessly reading the console flags. The READ_ONCE()
+ * in this function matches the WRITE_ONCE() when @flags are modified
+ * for registered consoles with console_srcu_write_flags().
+ *
+ * Only use this function to read console flags when locklessly
+ * iterating the console list via srcu.
+ *
+ * Context: Any context.
  */
-#define for_each_console(con) \
-	for (con = console_drivers; con != NULL; con = con->next)
+static inline short console_srcu_read_flags(const struct console *con)
+{
+	WARN_ON_ONCE(!console_srcu_read_lock_is_held());
+
+	/*
+	 * Locklessly reading console->flags provides a consistent
+	 * read value because there is at most one CPU modifying
+	 * console->flags and that CPU is using only read-modify-write
+	 * operations to do so.
+	 */
+	return data_race(READ_ONCE(con->flags));
+}
+
+/**
+ * console_srcu_write_flags - Write flags for a registered console
+ * @con:	struct console pointer of console to write flags to
+ * @flags:	new flags value to write
+ *
+ * Only use this function to write flags for registered consoles. It
+ * requires holding the console_list_lock.
+ *
+ * Context: Any context.
+ */
+static inline void console_srcu_write_flags(struct console *con, short flags)
+{
+	lockdep_assert_console_list_lock_held();
+
+	/* This matches the READ_ONCE() in console_srcu_read_flags(). */
+	WRITE_ONCE(con->flags, flags);
+}
+
+/* Variant of console_is_registered() when the console_list_lock is held. */
+static inline bool console_is_registered_locked(const struct console *con)
+{
+	lockdep_assert_console_list_lock_held();
+	return !hlist_unhashed(&con->node);
+}
+
+/*
+ * console_is_registered - Check if the console is registered
+ * @con:	struct console pointer of console to check
+ *
+ * Context: Process context. May sleep while acquiring console list lock.
+ * Return: true if the console is in the console list, otherwise false.
+ *
+ * If false is returned for a console that was previously registered, it
+ * can be assumed that the console's unregistration is fully completed,
+ * including the exit() callback after console list removal.
+ */
+static inline bool console_is_registered(const struct console *con)
+{
+	bool ret;
+
+	console_list_lock();
+	ret = console_is_registered_locked(con);
+	console_list_unlock();
+	return ret;
+}
+
+/**
+ * for_each_console_srcu() - Iterator over registered consoles
+ * @con:	struct console pointer used as loop cursor
+ *
+ * Although SRCU guarantees the console list will be consistent, the
+ * struct console fields may be updated by other CPUs while iterating.
+ *
+ * Requires console_srcu_read_lock to be held. Can be invoked from
+ * any context.
+ */
+#define for_each_console_srcu(con)					\
+	hlist_for_each_entry_srcu(con, &console_list, node,		\
+				  console_srcu_read_lock_is_held())
+
+/**
+ * for_each_console() - Iterator over registered consoles
+ * @con:	struct console pointer used as loop cursor
+ *
+ * The console list and the console->flags are immutable while iterating.
+ *
+ * Requires console_list_lock to be held.
+ */
+#define for_each_console(con)						\
+	lockdep_assert_console_list_lock_held();			\
+	hlist_for_each_entry(con, &console_list, node)
 
 extern int console_set_on_cmdline;
 extern struct console *early_console;
@@ -172,9 +291,9 @@ enum con_flush_mode {
 };
 
 extern int add_preferred_console(char *name, int idx, char *options);
+extern void console_force_preferred_locked(struct console *con);
 extern void register_console(struct console *);
 extern int unregister_console(struct console *);
-extern struct console *console_drivers;
 extern void console_lock(void);
 extern int console_trylock(void);
 extern void console_unlock(void);
@@ -220,12 +339,6 @@ extern atomic_t ignore_console_lock_warning;
 #define VESA_VSYNC_SUSPEND      1
 #define VESA_HSYNC_SUSPEND      2
 #define VESA_POWERDOWN          3
-
-#ifdef CONFIG_VGA_CONSOLE
-extern bool vgacon_text_force(void);
-#else
-static inline bool vgacon_text_force(void) { return false; }
-#endif
 
 extern void console_init(void);
 

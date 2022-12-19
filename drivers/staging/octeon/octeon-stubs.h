@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #define CONFIG_CAVIUM_OCTEON_CVMSEG_SIZE	512
 
 #ifndef XKPHYS_TO_PHYS
@@ -1211,7 +1212,7 @@ static inline void *cvmx_phys_to_ptr(uint64_t physical_address)
 	return (void *)(uintptr_t)(physical_address);
 }
 
-static inline uint64_t cvmx_ptr_to_phys(void *ptr)
+static inline phys_addr_t cvmx_ptr_to_phys(void *ptr)
 {
 	return (unsigned long)ptr;
 }

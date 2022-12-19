@@ -145,8 +145,8 @@ static void s6sy761_report_coordinates(struct s6sy761_data *sdata,
 	u8 major = event[4];
 	u8 minor = event[5];
 	u8 z = event[6] & S6SY761_MASK_Z;
-	u16 x = (event[1] << 3) | ((event[3] & S6SY761_MASK_X) >> 4);
-	u16 y = (event[2] << 3) | (event[3] & S6SY761_MASK_Y);
+	u16 x = (event[1] << 4) | ((event[3] & S6SY761_MASK_X) >> 4);
+	u16 y = (event[2] << 4) | (event[3] & S6SY761_MASK_Y);
 
 	input_mt_slot(sdata->input, tid);
 
@@ -389,8 +389,7 @@ static void s6sy761_power_off(void *data)
 						sdata->regulators);
 }
 
-static int s6sy761_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int s6sy761_probe(struct i2c_client *client)
 {
 	struct s6sy761_data *sdata;
 	unsigned int max_x, max_y;
@@ -475,11 +474,9 @@ static int s6sy761_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int s6sy761_remove(struct i2c_client *client)
+static void s6sy761_remove(struct i2c_client *client)
 {
 	pm_runtime_disable(&client->dev);
-
-	return 0;
 }
 
 static int __maybe_unused s6sy761_runtime_suspend(struct device *dev)
@@ -542,7 +539,7 @@ static struct i2c_driver s6sy761_driver = {
 		.of_match_table = of_match_ptr(s6sy761_of_match),
 		.pm = &s6sy761_pm_ops,
 	},
-	.probe = s6sy761_probe,
+	.probe_new = s6sy761_probe,
 	.remove = s6sy761_remove,
 	.id_table = s6sy761_id,
 };

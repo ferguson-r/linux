@@ -72,7 +72,8 @@ static int ftrace_check_current_nop(unsigned long hook)
 	uint16_t olds[7];
 	unsigned long hook_pos = hook - 2;
 
-	if (probe_kernel_read((void *)olds, (void *)hook_pos, sizeof(nops)))
+	if (copy_from_kernel_nofault((void *)olds, (void *)hook_pos,
+			sizeof(nops)))
 		return -EFAULT;
 
 	if (memcmp((void *)nops, (void *)olds, sizeof(nops))) {
@@ -97,7 +98,7 @@ static int ftrace_modify_code(unsigned long hook, unsigned long target,
 
 	make_jbsr(target, hook, call, nolr);
 
-	ret = probe_kernel_write((void *)hook_pos, enable ? call : nops,
+	ret = copy_to_kernel_nofault((void *)hook_pos, enable ? call : nops,
 				 sizeof(nops));
 	if (ret)
 		return -EPERM;
@@ -131,11 +132,6 @@ int ftrace_update_ftrace_func(ftrace_func_t func)
 		ret = ftrace_modify_code((unsigned long)&ftrace_regs_call,
 				(unsigned long)func, true, true);
 	return ret;
-}
-
-int __init ftrace_dyn_arch_init(void)
-{
-	return 0;
 }
 #endif /* CONFIG_DYNAMIC_FTRACE */
 

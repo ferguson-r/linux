@@ -26,6 +26,12 @@ properties:
   clocks:
     maxItems: 1
 
+  dmas:
+    maxItems: 1
+
+  dma-names:
+    const: rx-tx
+
   reset-names:
     description: |
       There are three reset signals at maximum
@@ -35,15 +41,15 @@ properties:
     oneOf:
       - const: host
       - items:
-        - const: host
-        - const: bridge
+          - const: host
+          - const: bridge
       - items:
-        - const: host
-        - const: hw
+          - const: host
+          - const: hw
       - items:
-        - const: host
-        - const: bridge
-        - const: hw
+          - const: host
+          - const: bridge
+          - const: hw
 
   resets:
     minItems: 1
@@ -76,6 +82,8 @@ required:
   - clocks
   - reset-names
   - resets
+
+unevaluatedProperties: false
 
 examples:
   - |

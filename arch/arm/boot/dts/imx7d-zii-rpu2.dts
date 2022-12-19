@@ -36,7 +36,7 @@
 		pinctrl-0 = <&pinctrl_leds_debug>;
 		pinctrl-names = "default";
 
-		debug {
+		led-debug {
 			label = "zii:green:debug1";
 			gpios = <&gpio2 8 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "heartbeat";
@@ -182,7 +182,7 @@
 };
 
 &cpu0 {
-	arm-supply = <&sw1a_reg>;
+	cpu-supply = <&sw1a_reg>;
 };
 
 &clks {
@@ -193,7 +193,7 @@
 &ecspi1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_ecspi1>;
-	cs-gpios = <&gpio4 19 GPIO_ACTIVE_HIGH>;
+	cs-gpios = <&gpio4 19 GPIO_ACTIVE_LOW>;
 	status = "okay";
 
 	flash@0 {

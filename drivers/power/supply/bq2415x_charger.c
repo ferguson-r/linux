@@ -5,14 +5,14 @@
  * Copyright (C) 2011-2013  Pali Rohár <pali@kernel.org>
  *
  * Datasheets:
- * http://www.ti.com/product/bq24150
- * http://www.ti.com/product/bq24150a
- * http://www.ti.com/product/bq24152
- * http://www.ti.com/product/bq24153
- * http://www.ti.com/product/bq24153a
- * http://www.ti.com/product/bq24155
- * http://www.ti.com/product/bq24157s
- * http://www.ti.com/product/bq24158
+ * https://www.ti.com/product/bq24150
+ * https://www.ti.com/product/bq24150a
+ * https://www.ti.com/product/bq24152
+ * https://www.ti.com/product/bq24153
+ * https://www.ti.com/product/bq24153a
+ * https://www.ti.com/product/bq24155
+ * https://www.ti.com/product/bq24157s
+ * https://www.ti.com/product/bq24158
  */
 
 #include <linux/kernel.h>
@@ -1520,9 +1520,9 @@ static int bq2415x_power_supply_init(struct bq2415x_device *bq)
 }
 
 /* main bq2415x probe function */
-static int bq2415x_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int bq2415x_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int ret;
 	int num;
 	char *name = NULL;
@@ -1696,7 +1696,7 @@ error_1:
 
 /* main bq2415x remove function */
 
-static int bq2415x_remove(struct i2c_client *client)
+static void bq2415x_remove(struct i2c_client *client)
 {
 	struct bq2415x_device *bq = i2c_get_clientdata(client);
 
@@ -1715,8 +1715,6 @@ static int bq2415x_remove(struct i2c_client *client)
 	dev_info(bq->dev, "driver unregistered\n");
 
 	kfree(bq->name);
-
-	return 0;
 }
 
 static const struct i2c_device_id bq2415x_i2c_id_table[] = {
@@ -1782,7 +1780,7 @@ static struct i2c_driver bq2415x_driver = {
 		.of_match_table = of_match_ptr(bq2415x_of_match_table),
 		.acpi_match_table = ACPI_PTR(bq2415x_i2c_acpi_match),
 	},
-	.probe = bq2415x_probe,
+	.probe_new = bq2415x_probe,
 	.remove = bq2415x_remove,
 	.id_table = bq2415x_i2c_id_table,
 };

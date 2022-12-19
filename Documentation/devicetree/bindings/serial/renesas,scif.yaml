@@ -33,6 +33,7 @@ properties:
 
       - items:
           - enum:
+              - renesas,scif-r8a7742      # RZ/G1H
               - renesas,scif-r8a7743      # RZ/G1M
               - renesas,scif-r8a7744      # RZ/G1N
               - renesas,scif-r8a7745      # RZ/G1E
@@ -50,6 +51,7 @@ properties:
               - renesas,scif-r8a774a1     # RZ/G2M
               - renesas,scif-r8a774b1     # RZ/G2N
               - renesas,scif-r8a774c0     # RZ/G2E
+              - renesas,scif-r8a774e1     # RZ/G2H
               - renesas,scif-r8a7795      # R-Car H3
               - renesas,scif-r8a7796      # R-Car M3-W
               - renesas,scif-r8a77961     # R-Car M3-W+
@@ -60,6 +62,24 @@ properties:
               - renesas,scif-r8a77995     # R-Car D3
           - const: renesas,rcar-gen3-scif # R-Car Gen3 and RZ/G2
           - const: renesas,scif           # generic SCIF compatible UART
+
+      - items:
+          - enum:
+              - renesas,scif-r8a779a0     # R-Car V3U
+              - renesas,scif-r8a779f0     # R-Car S4-8
+              - renesas,scif-r8a779g0     # R-Car V4H
+          - const: renesas,rcar-gen4-scif # R-Car Gen4
+          - const: renesas,scif           # generic SCIF compatible UART
+
+      - items:
+          - enum:
+              - renesas,scif-r9a07g044      # RZ/G2{L,LC}
+
+      - items:
+          - enum:
+              - renesas,scif-r9a07g043      # RZ/G2UL and RZ/Five
+              - renesas,scif-r9a07g054      # RZ/V2L
+          - const: renesas,scif-r9a07g044   # RZ/G2{L,LC} fallback
 
   reg:
     maxItems: 1
@@ -117,6 +137,8 @@ properties:
     maxItems: 1
 
   dmas:
+    minItems: 2
+    maxItems: 4
     description:
       Must contain a list of pairs of references to DMA specifiers, one for
       transmission, and one for reception.
@@ -144,9 +166,13 @@ if:
         enum:
           - renesas,rcar-gen2-scif
           - renesas,rcar-gen3-scif
+          - renesas,rcar-gen4-scif
+          - renesas,scif-r9a07g044
 then:
   required:
     - resets
+
+unevaluatedProperties: false
 
 examples:
   - |

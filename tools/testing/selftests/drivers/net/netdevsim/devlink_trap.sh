@@ -24,13 +24,15 @@ ALL_TESTS="
 NETDEVSIM_PATH=/sys/bus/netdevsim/
 DEV_ADDR=1337
 DEV=netdevsim${DEV_ADDR}
-DEVLINK_DEV=netdevsim/${DEV}
 DEBUGFS_DIR=/sys/kernel/debug/netdevsim/$DEV/
 SLEEP_TIME=1
 NETDEV=""
 NUM_NETIFS=0
 source $lib_dir/lib.sh
+
+DEVLINK_DEV=
 source $lib_dir/devlink_lib.sh
+DEVLINK_DEV=netdevsim/${DEV}
 
 require_command udevadm
 
@@ -163,6 +165,16 @@ trap_stats_test()
 			devlink_trap_action_set $trap_name "drop"
 			devlink_trap_stats_idle_test $trap_name
 			check_err $? "Stats of trap $trap_name not idle when action is drop"
+
+			echo "y"> $DEBUGFS_DIR/fail_trap_drop_counter_get
+			devlink -s trap show $DEVLINK_DEV trap $trap_name &> /dev/null
+			check_fail $? "Managed to read trap (hard dropped) statistics when should not"
+			echo "n"> $DEBUGFS_DIR/fail_trap_drop_counter_get
+			devlink -s trap show $DEVLINK_DEV trap $trap_name &> /dev/null
+			check_err $? "Did not manage to read trap (hard dropped) statistics when should"
+
+			devlink_trap_drop_stats_idle_test $trap_name
+			check_fail $? "Drop stats of trap $trap_name idle when should not"
 		else
 			devlink_trap_stats_idle_test $trap_name
 			check_fail $? "Stats of non-drop trap $trap_name idle when should not"
@@ -264,6 +276,8 @@ trap_policer_test()
 	local packets_t0
 	local packets_t1
 
+	RET=0
+
 	if [ $(devlink_trap_policers_num_get) -eq 0 ]; then
 		check_err 1 "Failed to dump policers"
 	fi
@@ -328,6 +342,8 @@ trap_group_check_policer()
 
 trap_policer_bind_test()
 {
+	RET=0
+
 	devlink trap group set $DEVLINK_DEV group l2_drops policer 1
 	check_err $? "Failed to bind a valid policer"
 	if [ $(devlink_trap_group_policer_get "l2_drops") -ne 1 ]; then

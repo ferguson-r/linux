@@ -167,17 +167,17 @@
 
 /**
  * struct drv260x_data -
- * @input_dev - Pointer to the input device
- * @client - Pointer to the I2C client
- * @regmap - Register map of the device
- * @work - Work item used to off load the enable/disable of the vibration
- * @enable_gpio - Pointer to the gpio used for enable/disabling
- * @regulator - Pointer to the regulator for the IC
- * @magnitude - Magnitude of the vibration event
- * @mode - The operating mode of the IC (LRA_NO_CAL, ERM or LRA)
- * @library - The vibration library to be used
- * @rated_voltage - The rated_voltage of the actuator
- * @overdriver_voltage - The over drive voltage of the actuator
+ * @input_dev: Pointer to the input device
+ * @client: Pointer to the I2C client
+ * @regmap: Register map of the device
+ * @work: Work item used to off load the enable/disable of the vibration
+ * @enable_gpio: Pointer to the gpio used for enable/disabling
+ * @regulator: Pointer to the regulator for the IC
+ * @magnitude: Magnitude of the vibration event
+ * @mode: The operating mode of the IC (LRA_NO_CAL, ERM or LRA)
+ * @library: The vibration library to be used
+ * @rated_voltage: The rated_voltage of the actuator
+ * @overdrive_voltage: The over drive voltage of the actuator
 **/
 struct drv260x_data {
 	struct input_dev *input_dev;
@@ -234,12 +234,12 @@ static const struct reg_default drv260x_reg_defs[] = {
 #define DRV260X_DEF_RATED_VOLT		0x90
 #define DRV260X_DEF_OD_CLAMP_VOLT	0x90
 
-/**
+/*
  * Rated and Overdriver Voltages:
  * Calculated using the formula r = v * 255 / 5.6
  * where r is what will be written to the register
  * and v is the rated or overdriver voltage of the actuator
- **/
+ */
 static int drv260x_calculate_voltage(unsigned int voltage)
 {
 	return (voltage * 255 / 5600);
@@ -457,8 +457,7 @@ static const struct regmap_config drv260x_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int drv260x_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int drv260x_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct drv260x_data *haptics;
@@ -580,7 +579,7 @@ static int __maybe_unused drv260x_suspend(struct device *dev)
 
 	mutex_lock(&haptics->input_dev->mutex);
 
-	if (haptics->input_dev->users) {
+	if (input_device_enabled(haptics->input_dev)) {
 		ret = regmap_update_bits(haptics->regmap,
 					 DRV260X_MODE,
 					 DRV260X_STANDBY_MASK,
@@ -612,7 +611,7 @@ static int __maybe_unused drv260x_resume(struct device *dev)
 
 	mutex_lock(&haptics->input_dev->mutex);
 
-	if (haptics->input_dev->users) {
+	if (input_device_enabled(haptics->input_dev)) {
 		ret = regulator_enable(haptics->regulator);
 		if (ret) {
 			dev_err(dev, "Failed to enable regulator\n");
@@ -654,7 +653,7 @@ static const struct of_device_id drv260x_of_match[] = {
 MODULE_DEVICE_TABLE(of, drv260x_of_match);
 
 static struct i2c_driver drv260x_driver = {
-	.probe		= drv260x_probe,
+	.probe_new	= drv260x_probe,
 	.driver		= {
 		.name	= "drv260x-haptics",
 		.of_match_table = drv260x_of_match,

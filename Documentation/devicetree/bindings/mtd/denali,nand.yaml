@@ -54,8 +54,8 @@ properties:
         reg:  register reset
     oneOf:
       - items:
-        - const: nand
-        - const: reg
+          - const: nand
+          - const: reg
       - const: nand
       - const: reg
 
@@ -128,6 +128,8 @@ required:
   - clock-names
   - clocks
 
+unevaluatedProperties: false
+
 examples:
   - |
     nand-controller@ff900000 {
@@ -143,6 +145,6 @@ examples:
         #size-cells = <0>;
 
         nand@0 {
-                reg = <0>;
+            reg = <0>;
         };
     };

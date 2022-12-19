@@ -41,7 +41,7 @@ struct diff_mmio {
 
 /* Compare two diff_mmio items. */
 static int mmio_offset_compare(void *priv,
-	struct list_head *a, struct list_head *b)
+	const struct list_head *a, const struct list_head *b)
 {
 	struct diff_mmio *ma;
 	struct diff_mmio *mb;
@@ -66,7 +66,7 @@ static inline int mmio_diff_handler(struct intel_gvt *gvt,
 	vreg = vgpu_vreg(param->vgpu, offset);
 
 	if (preg != vreg) {
-		node = kmalloc(sizeof(*node), GFP_KERNEL);
+		node = kmalloc(sizeof(*node), GFP_ATOMIC);
 		if (!node)
 			return -ENOMEM;
 

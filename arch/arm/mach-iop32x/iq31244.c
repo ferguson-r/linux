@@ -31,7 +31,6 @@
 #include <asm/mach/time.h>
 #include <asm/mach-types.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 
 #include "hardware.h"
 #include "irqs.h"
@@ -325,6 +324,7 @@ MACHINE_END
 MACHINE_START(EP80219, "Intel EP80219")
 	/* Maintainer: Intel Corp. */
 	.atag_offset	= 0x100,
+	.nr_irqs	= IOP32X_NR_IRQS,
 	.map_io		= iq31244_map_io,
 	.init_irq	= iop32x_init_irq,
 	.init_time	= iq31244_timer_init,

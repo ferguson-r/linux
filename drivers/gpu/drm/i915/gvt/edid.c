@@ -32,8 +32,10 @@
  *
  */
 
-#include "i915_drv.h"
+#include "display/intel_gmbus_regs.h"
 #include "gvt.h"
+#include "i915_drv.h"
+#include "i915_reg.h"
 
 #define GMBUS1_TOTAL_BYTES_SHIFT 16
 #define GMBUS1_TOTAL_BYTES_MASK 0x1ff
@@ -149,7 +151,7 @@ static int gmbus0_mmio_write(struct intel_vgpu *vgpu,
 
 	if (IS_BROXTON(i915))
 		port = bxt_get_port_from_gmbus0(pin_select);
-	else if (IS_COFFEELAKE(i915))
+	else if (IS_COFFEELAKE(i915) || IS_COMETLAKE(i915))
 		port = cnp_get_port_from_gmbus0(pin_select);
 	else
 		port = get_port_from_gmbus0(pin_select);

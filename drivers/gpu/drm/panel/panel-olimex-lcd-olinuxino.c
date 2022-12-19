@@ -170,7 +170,6 @@ static int lcd_olinuxino_get_modes(struct drm_panel *panel,
 				  lcd_mode->vpw;
 		mode->vtotal = lcd_mode->vactive + lcd_mode->vfp +
 			       lcd_mode->vpw + lcd_mode->vbp;
-		mode->vrefresh = lcd_mode->refresh;
 
 		/* Always make the first mode preferred */
 		if (i == 0)
@@ -284,10 +283,12 @@ static int lcd_olinuxino_probe(struct i2c_client *client,
 	if (ret)
 		return ret;
 
-	return drm_panel_add(&lcd->panel);
+	drm_panel_add(&lcd->panel);
+
+	return 0;
 }
 
-static int lcd_olinuxino_remove(struct i2c_client *client)
+static void lcd_olinuxino_remove(struct i2c_client *client)
 {
 	struct lcd_olinuxino *panel = i2c_get_clientdata(client);
 
@@ -295,8 +296,6 @@ static int lcd_olinuxino_remove(struct i2c_client *client)
 
 	drm_panel_disable(&panel->panel);
 	drm_panel_unprepare(&panel->panel);
-
-	return 0;
 }
 
 static const struct of_device_id lcd_olinuxino_of_ids[] = {

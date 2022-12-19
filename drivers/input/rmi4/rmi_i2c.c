@@ -17,12 +17,16 @@
  * struct rmi_i2c_xport - stores information for i2c communication
  *
  * @xport: The transport interface structure
+ * @client: The I2C client device structure
  *
  * @page_mutex: Locks current page to avoid changing pages in unexpected ways.
  * @page: Keeps track of the current virtual page
  *
  * @tx_buf: Buffer used for transmitting data to the sensor over i2c.
  * @tx_buf_size: Size of the buffer
+ *
+ * @supplies: Array of voltage regulators
+ * @startup_delay: Milliseconds to pause after powering up the regulators
  */
 struct rmi_i2c_xport {
 	struct rmi_transport_dev xport;
@@ -194,8 +198,7 @@ static void rmi_i2c_unregister_transport(void *data)
 	rmi_unregister_transport_device(&rmi_i2c->xport);
 }
 
-static int rmi_i2c_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int rmi_i2c_probe(struct i2c_client *client)
 {
 	struct rmi_device_platform_data *pdata;
 	struct rmi_device_platform_data *client_pdata =
@@ -379,7 +382,7 @@ static struct i2c_driver rmi_i2c_driver = {
 		.of_match_table = of_match_ptr(rmi_i2c_of_match),
 	},
 	.id_table	= rmi_id,
-	.probe		= rmi_i2c_probe,
+	.probe_new	= rmi_i2c_probe,
 };
 
 module_i2c_driver(rmi_i2c_driver);

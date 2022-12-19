@@ -18,7 +18,9 @@
 *.c.[012]*.*
 *.dt.yaml
 *.dtb
+*.dtbo
 *.dtb.S
+*.dtbo.S
 *.dwo
 *.elf
 *.gcno
@@ -36,30 +38,36 @@
 *.o
 *.o.*
 *.patch
+*.rmeta
+*.rsi
 *.s
 *.so
 *.so.dbg
 *.su
 *.symtypes
+*.symversions
 *.tab.[ch]
 *.tar
+*.usyms
 *.xz
+*.zst
 Module.symvers
-modules.builtin
 modules.order
 
 #
 # Top-level generic files
 #
-/tags
-/TAGS
 /linux
+/modules-only.symvers
 /vmlinux
 /vmlinux.32
+/vmlinux.map
+/vmlinux.symvers
 /vmlinux-gdb.py
 /vmlinuz
 /System.map
 /Module.markers
+/modules.builtin
 /modules.builtin.modinfo
 /modules.nsdeps
 
@@ -92,6 +100,7 @@ modules.order
 !.gitattributes
 !.gitignore
 !.mailmap
+!.rustfmt.toml
 
 #
 # Generated include files
@@ -107,6 +116,10 @@ patches-*
 # quilt's files
 patches
 series
+
+# ctags files
+tags
+TAGS
 
 # cscope files
 cscope.*
@@ -142,8 +155,17 @@ x509.genkey
 /allrandom.config
 /allyes.config
 
+# Kconfig savedefconfig output
+/defconfig
+
 # Kdevelop4
 *.kdev4
 
 # Clang's compilation database file
 /compile_commands.json
+
+# Documentation toolchain
+sphinx_*/
+
+# Rust analyzer configuration
+/rust-project.json

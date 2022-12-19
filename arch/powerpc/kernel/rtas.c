@@ -7,43 +7,58 @@
  * Copyright (C) 2001 IBM.
  */
 
-#include <stdarg.h>
-#include <linux/kernel.h>
-#include <linux/types.h>
-#include <linux/spinlock.h>
-#include <linux/export.h>
-#include <linux/init.h>
+#define pr_fmt(fmt)	"rtas: " fmt
+
 #include <linux/capability.h>
 #include <linux/delay.h>
-#include <linux/cpu.h>
-#include <linux/sched.h>
-#include <linux/smp.h>
-#include <linux/completion.h>
-#include <linux/cpumask.h>
+#include <linux/export.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
 #include <linux/memblock.h>
-#include <linux/slab.h>
+#include <linux/of.h>
+#include <linux/of_fdt.h>
 #include <linux/reboot.h>
+#include <linux/sched.h>
+#include <linux/security.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/stdarg.h>
 #include <linux/syscalls.h>
-
-#include <asm/prom.h>
-#include <asm/rtas.h>
-#include <asm/hvcall.h>
-#include <asm/machdep.h>
-#include <asm/firmware.h>
-#include <asm/page.h>
-#include <asm/param.h>
-#include <asm/delay.h>
+#include <linux/types.h>
 #include <linux/uaccess.h>
-#include <asm/udbg.h>
-#include <asm/syscalls.h>
-#include <asm/smp.h>
-#include <linux/atomic.h>
-#include <asm/time.h>
+
+#include <asm/delay.h>
+#include <asm/firmware.h>
+#include <asm/interrupt.h>
+#include <asm/machdep.h>
 #include <asm/mmu.h>
-#include <asm/topology.h>
+#include <asm/page.h>
+#include <asm/rtas.h>
+#include <asm/time.h>
+#include <asm/udbg.h>
 
 /* This is here deliberately so it's only used in this file */
 void enter_rtas(unsigned long);
+
+static inline void do_enter_rtas(unsigned long args)
+{
+	unsigned long msr;
+
+	/*
+	 * Make sure MSR[RI] is currently enabled as it will be forced later
+	 * in enter_rtas.
+	 */
+	msr = mfmsr();
+	BUG_ON(!(msr & MSR_RI));
+
+	BUG_ON(!irqs_disabled());
+
+	hard_irq_disable(); /* Ensure MSR[EE] is disabled on PPC64 */
+
+	enter_rtas(args);
+
+	srr_regs_clobbered(); /* rtas uses SRRs, invalidate */
+}
 
 struct rtas_t rtas = {
 	.lock = __ARCH_SPIN_LOCK_UNLOCKED
@@ -330,6 +345,9 @@ int rtas_service_present(const char *service)
 EXPORT_SYMBOL(rtas_service_present);
 
 #ifdef CONFIG_RTAS_ERROR_LOGGING
+
+static u32 rtas_error_log_max __ro_after_init = RTAS_ERROR_LOG_MAX;
+
 /*
  * Return the firmware-specified size of the error log buffer
  *  for all rtas calls that require an error buffer argument.
@@ -337,20 +355,29 @@ EXPORT_SYMBOL(rtas_service_present);
  */
 int rtas_get_error_log_max(void)
 {
-	static int rtas_error_log_max;
-	if (rtas_error_log_max)
-		return rtas_error_log_max;
-
-	rtas_error_log_max = rtas_token ("rtas-error-log-max");
-	if ((rtas_error_log_max == RTAS_UNKNOWN_SERVICE) ||
-	    (rtas_error_log_max > RTAS_ERROR_LOG_MAX)) {
-		printk (KERN_WARNING "RTAS: bad log buffer size %d\n",
-			rtas_error_log_max);
-		rtas_error_log_max = RTAS_ERROR_LOG_MAX;
-	}
 	return rtas_error_log_max;
 }
 EXPORT_SYMBOL(rtas_get_error_log_max);
+
+static void __init init_error_log_max(void)
+{
+	static const char propname[] __initconst = "rtas-error-log-max";
+	u32 max;
+
+	if (of_property_read_u32(rtas.dev, propname, &max)) {
+		pr_warn("%s not found, using default of %u\n",
+			propname, RTAS_ERROR_LOG_MAX);
+		max = RTAS_ERROR_LOG_MAX;
+	}
+
+	if (max > RTAS_ERROR_LOG_MAX) {
+		pr_warn("%s = %u, clamping max error log size to %u\n",
+			propname, max, RTAS_ERROR_LOG_MAX);
+		max = RTAS_ERROR_LOG_MAX;
+	}
+
+	rtas_error_log_max = max;
+}
 
 
 static char rtas_err_buf[RTAS_ERROR_LOG_MAX];
@@ -383,7 +410,7 @@ static char *__fetch_rtas_last_error(char *altbuf)
 	save_args = rtas.args;
 	rtas.args = err_args;
 
-	enter_rtas(__pa(&rtas.args));
+	do_enter_rtas(__pa(&rtas.args));
 
 	err_args = rtas.args;
 	rtas.args = save_args;
@@ -409,6 +436,7 @@ static char *__fetch_rtas_last_error(char *altbuf)
 #else /* CONFIG_RTAS_ERROR_LOGGING */
 #define __fetch_rtas_last_error(x)	NULL
 #define get_errorlog_buffer()		NULL
+static void __init init_error_log_max(void) {}
 #endif
 
 
@@ -429,7 +457,7 @@ va_rtas_call_unlocked(struct rtas_args *args, int token, int nargs, int nret,
 	for (i = 0; i < nret; ++i)
 		args->rets[i] = 0;
 
-	enter_rtas(__pa(args));
+	do_enter_rtas(__pa(args));
 }
 
 void rtas_call_unlocked(struct rtas_args *args, int token, int nargs, int nret, ...)
@@ -441,6 +469,67 @@ void rtas_call_unlocked(struct rtas_args *args, int token, int nargs, int nret, 
 	va_end(list);
 }
 
+static int ibm_open_errinjct_token;
+static int ibm_errinjct_token;
+
+/**
+ * rtas_call() - Invoke an RTAS firmware function.
+ * @token: Identifies the function being invoked.
+ * @nargs: Number of input parameters. Does not include token.
+ * @nret: Number of output parameters, including the call status.
+ * @outputs: Array of @nret output words.
+ * @....: List of @nargs input parameters.
+ *
+ * Invokes the RTAS function indicated by @token, which the caller
+ * should obtain via rtas_token().
+ *
+ * The @nargs and @nret arguments must match the number of input and
+ * output parameters specified for the RTAS function.
+ *
+ * rtas_call() returns RTAS status codes, not conventional Linux errno
+ * values. Callers must translate any failure to an appropriate errno
+ * in syscall context. Most callers of RTAS functions that can return
+ * -2 or 990x should use rtas_busy_delay() to correctly handle those
+ * statuses before calling again.
+ *
+ * The return value descriptions are adapted from 7.2.8 [RTAS] Return
+ * Codes of the PAPR and CHRP specifications.
+ *
+ * Context: Process context preferably, interrupt context if
+ *          necessary.  Acquires an internal spinlock and may perform
+ *          GFP_ATOMIC slab allocation in error path. Unsafe for NMI
+ *          context.
+ * Return:
+ * *                          0 - RTAS function call succeeded.
+ * *                         -1 - RTAS function encountered a hardware or
+ *                                platform error, or the token is invalid,
+ *                                or the function is restricted by kernel policy.
+ * *                         -2 - Specs say "A necessary hardware device was busy,
+ *                                and the requested function could not be
+ *                                performed. The operation should be retried at
+ *                                a later time." This is misleading, at least with
+ *                                respect to current RTAS implementations. What it
+ *                                usually means in practice is that the function
+ *                                could not be completed while meeting RTAS's
+ *                                deadline for returning control to the OS (250us
+ *                                for PAPR/PowerVM, typically), but the call may be
+ *                                immediately reattempted to resume work on it.
+ * *                         -3 - Parameter error.
+ * *                         -7 - Unexpected state change.
+ * *                9000...9899 - Vendor-specific success codes.
+ * *                9900...9905 - Advisory extended delay. Caller should try
+ *                                again after ~10^x ms has elapsed, where x is
+ *                                the last digit of the status [0-5]. Again going
+ *                                beyond the PAPR text, 990x on PowerVM indicates
+ *                                contention for RTAS-internal resources. Other
+ *                                RTAS call sequences in progress should be
+ *                                allowed to complete before reattempting the
+ *                                call.
+ * *                      -9000 - Multi-level isolation error.
+ * *              -9999...-9004 - Vendor-specific error codes.
+ * * Additional negative values - Function-specific error.
+ * * Additional positive values - Function-specific success.
+ */
 int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 {
 	va_list list;
@@ -452,6 +541,21 @@ int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 
 	if (!rtas.entry || token == RTAS_UNKNOWN_SERVICE)
 		return -1;
+
+	if (token == ibm_open_errinjct_token || token == ibm_errinjct_token) {
+		/*
+		 * It would be nicer to not discard the error value
+		 * from security_locked_down(), but callers expect an
+		 * RTAS status, not an errno.
+		 */
+		if (security_locked_down(LOCKDOWN_RTAS_ERROR_INJECTION))
+			return -1;
+	}
+
+	if ((mfmsr() & (MSR_IR|MSR_DR)) != (MSR_IR|MSR_DR)) {
+		WARN_ON_ONCE(1);
+		return -1;
+	}
 
 	s = lock_rtas();
 
@@ -483,8 +587,25 @@ int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 }
 EXPORT_SYMBOL(rtas_call);
 
-/* For RTAS_BUSY (-2), delay for 1 millisecond.  For an extended busy status
- * code of 990n, perform the hinted delay of 10^n (last digit) milliseconds.
+/**
+ * rtas_busy_delay_time() - From an RTAS status value, calculate the
+ *                          suggested delay time in milliseconds.
+ *
+ * @status: a value returned from rtas_call() or similar APIs which return
+ *          the status of a RTAS function call.
+ *
+ * Context: Any context.
+ *
+ * Return:
+ * * 100000 - If @status is 9905.
+ * * 10000  - If @status is 9904.
+ * * 1000   - If @status is 9903.
+ * * 100    - If @status is 9902.
+ * * 10     - If @status is 9901.
+ * * 1      - If @status is either 9900 or -2. This is "wrong" for -2, but
+ *            some callers depend on this behavior, and the worst outcome
+ *            is that they will delay for longer than necessary.
+ * * 0      - If @status is not a busy or extended delay value.
  */
 unsigned int rtas_busy_delay_time(int status)
 {
@@ -504,17 +625,77 @@ unsigned int rtas_busy_delay_time(int status)
 }
 EXPORT_SYMBOL(rtas_busy_delay_time);
 
-/* For an RTAS busy status code, perform the hinted delay. */
-unsigned int rtas_busy_delay(int status)
+/**
+ * rtas_busy_delay() - helper for RTAS busy and extended delay statuses
+ *
+ * @status: a value returned from rtas_call() or similar APIs which return
+ *          the status of a RTAS function call.
+ *
+ * Context: Process context. May sleep or schedule.
+ *
+ * Return:
+ * * true  - @status is RTAS_BUSY or an extended delay hint. The
+ *           caller may assume that the CPU has been yielded if necessary,
+ *           and that an appropriate delay for @status has elapsed.
+ *           Generally the caller should reattempt the RTAS call which
+ *           yielded @status.
+ *
+ * * false - @status is not @RTAS_BUSY nor an extended delay hint. The
+ *           caller is responsible for handling @status.
+ */
+bool rtas_busy_delay(int status)
 {
 	unsigned int ms;
+	bool ret;
 
-	might_sleep();
-	ms = rtas_busy_delay_time(status);
-	if (ms && need_resched())
-		msleep(ms);
+	switch (status) {
+	case RTAS_EXTENDED_DELAY_MIN...RTAS_EXTENDED_DELAY_MAX:
+		ret = true;
+		ms = rtas_busy_delay_time(status);
+		/*
+		 * The extended delay hint can be as high as 100 seconds.
+		 * Surely any function returning such a status is either
+		 * buggy or isn't going to be significantly slowed by us
+		 * polling at 1HZ. Clamp the sleep time to one second.
+		 */
+		ms = clamp(ms, 1U, 1000U);
+		/*
+		 * The delay hint is an order-of-magnitude suggestion, not
+		 * a minimum. It is fine, possibly even advantageous, for
+		 * us to pause for less time than hinted. For small values,
+		 * use usleep_range() to ensure we don't sleep much longer
+		 * than actually needed.
+		 *
+		 * See Documentation/timers/timers-howto.rst for
+		 * explanation of the threshold used here. In effect we use
+		 * usleep_range() for 9900 and 9901, msleep() for
+		 * 9902-9905.
+		 */
+		if (ms <= 20)
+			usleep_range(ms * 100, ms * 1000);
+		else
+			msleep(ms);
+		break;
+	case RTAS_BUSY:
+		ret = true;
+		/*
+		 * We should call again immediately if there's no other
+		 * work to do.
+		 */
+		cond_resched();
+		break;
+	default:
+		ret = false;
+		/*
+		 * Not a busy or extended delay status; the caller should
+		 * handle @status itself. Ensure we warn on misuses in
+		 * atomic context regardless.
+		 */
+		might_sleep();
+		break;
+	}
 
-	return ms;
+	return ret;
 }
 EXPORT_SYMBOL(rtas_busy_delay);
 
@@ -539,8 +720,7 @@ static int rtas_error_rc(int rtas_rc)
 			rc = -ENODEV;
 			break;
 		default:
-			printk(KERN_ERR "%s: unexpected RTAS error %d\n",
-					__func__, rtas_rc);
+			pr_err("%s: unexpected error %d\n", __func__, rtas_rc);
 			rc = -ERANGE;
 			break;
 	}
@@ -683,12 +863,69 @@ int rtas_set_indicator_fast(int indicator, int index, int new_value)
 	return rc;
 }
 
+/**
+ * rtas_ibm_suspend_me() - Call ibm,suspend-me to suspend the LPAR.
+ *
+ * @fw_status: RTAS call status will be placed here if not NULL.
+ *
+ * rtas_ibm_suspend_me() should be called only on a CPU which has
+ * received H_CONTINUE from the H_JOIN hcall. All other active CPUs
+ * should be waiting to return from H_JOIN.
+ *
+ * rtas_ibm_suspend_me() may suspend execution of the OS
+ * indefinitely. Callers should take appropriate measures upon return, such as
+ * resetting watchdog facilities.
+ *
+ * Callers may choose to retry this call if @fw_status is
+ * %RTAS_THREADS_ACTIVE.
+ *
+ * Return:
+ * 0          - The partition has resumed from suspend, possibly after
+ *              migration to a different host.
+ * -ECANCELED - The operation was aborted.
+ * -EAGAIN    - There were other CPUs not in H_JOIN at the time of the call.
+ * -EBUSY     - Some other condition prevented the suspend from succeeding.
+ * -EIO       - Hardware/platform error.
+ */
+int rtas_ibm_suspend_me(int *fw_status)
+{
+	int fwrc;
+	int ret;
+
+	fwrc = rtas_call(rtas_token("ibm,suspend-me"), 0, 1, NULL);
+
+	switch (fwrc) {
+	case 0:
+		ret = 0;
+		break;
+	case RTAS_SUSPEND_ABORTED:
+		ret = -ECANCELED;
+		break;
+	case RTAS_THREADS_ACTIVE:
+		ret = -EAGAIN;
+		break;
+	case RTAS_NOT_SUSPENDABLE:
+	case RTAS_OUTSTANDING_COPROC:
+		ret = -EBUSY;
+		break;
+	case -1:
+	default:
+		ret = -EIO;
+		break;
+	}
+
+	if (fw_status)
+		*fw_status = fwrc;
+
+	return ret;
+}
+
 void __noreturn rtas_restart(char *cmd)
 {
 	if (rtas_flash_term_hook)
 		rtas_flash_term_hook(SYS_RESTART);
-	printk("RTAS system-reboot returned %d\n",
-	       rtas_call(rtas_token("system-reboot"), 0, 1, NULL));
+	pr_emerg("system-reboot returned %d\n",
+		 rtas_call(rtas_token("system-reboot"), 0, 1, NULL));
 	for (;;);
 }
 
@@ -697,8 +934,8 @@ void rtas_power_off(void)
 	if (rtas_flash_term_hook)
 		rtas_flash_term_hook(SYS_POWER_OFF);
 	/* allow power on only with power button press */
-	printk("RTAS power-off returned %d\n",
-	       rtas_call(rtas_token("power-off"), 2, 1, NULL, -1, -1));
+	pr_emerg("power-off returned %d\n",
+		 rtas_call(rtas_token("power-off"), 2, 1, NULL, -1, -1));
 	for (;;);
 }
 
@@ -707,13 +944,14 @@ void __noreturn rtas_halt(void)
 	if (rtas_flash_term_hook)
 		rtas_flash_term_hook(SYS_HALT);
 	/* allow power on only with power button press */
-	printk("RTAS power-off returned %d\n",
-	       rtas_call(rtas_token("power-off"), 2, 1, NULL, -1, -1));
+	pr_emerg("power-off returned %d\n",
+		 rtas_call(rtas_token("power-off"), 2, 1, NULL, -1, -1));
 	for (;;);
 }
 
 /* Must be in the RMO region, so we place it here */
 static char rtas_os_term_buf[2048];
+static s32 ibm_os_term_token = RTAS_UNKNOWN_SERVICE;
 
 void rtas_os_term(char *str)
 {
@@ -725,311 +963,65 @@ void rtas_os_term(char *str)
 	 * this property may terminate the partition which we want to avoid
 	 * since it interferes with panic_timeout.
 	 */
-	if (RTAS_UNKNOWN_SERVICE == rtas_token("ibm,os-term") ||
-	    RTAS_UNKNOWN_SERVICE == rtas_token("ibm,extended-os-term"))
+	if (ibm_os_term_token == RTAS_UNKNOWN_SERVICE)
 		return;
 
 	snprintf(rtas_os_term_buf, 2048, "OS panic: %s", str);
 
+	/*
+	 * Keep calling as long as RTAS returns a "try again" status,
+	 * but don't use rtas_busy_delay(), which potentially
+	 * schedules.
+	 */
 	do {
-		status = rtas_call(rtas_token("ibm,os-term"), 1, 1, NULL,
+		status = rtas_call(ibm_os_term_token, 1, 1, NULL,
 				   __pa(rtas_os_term_buf));
-	} while (rtas_busy_delay(status));
+	} while (rtas_busy_delay_time(status));
 
 	if (status != 0)
-		printk(KERN_EMERG "ibm,os-term call failed %d\n", status);
+		pr_emerg("ibm,os-term call failed %d\n", status);
 }
-
-static int ibm_suspend_me_token = RTAS_UNKNOWN_SERVICE;
-#ifdef CONFIG_PPC_PSERIES
-static int __rtas_suspend_last_cpu(struct rtas_suspend_me_data *data, int wake_when_done)
-{
-	u16 slb_size = mmu_slb_size;
-	int rc = H_MULTI_THREADS_ACTIVE;
-	int cpu;
-
-	slb_set_size(SLB_MIN_SIZE);
-	printk(KERN_DEBUG "calling ibm,suspend-me on cpu %i\n", smp_processor_id());
-
-	while (rc == H_MULTI_THREADS_ACTIVE && !atomic_read(&data->done) &&
-	       !atomic_read(&data->error))
-		rc = rtas_call(data->token, 0, 1, NULL);
-
-	if (rc || atomic_read(&data->error)) {
-		printk(KERN_DEBUG "ibm,suspend-me returned %d\n", rc);
-		slb_set_size(slb_size);
-	}
-
-	if (atomic_read(&data->error))
-		rc = atomic_read(&data->error);
-
-	atomic_set(&data->error, rc);
-	pSeries_coalesce_init();
-
-	if (wake_when_done) {
-		atomic_set(&data->done, 1);
-
-		for_each_online_cpu(cpu)
-			plpar_hcall_norets(H_PROD, get_hard_smp_processor_id(cpu));
-	}
-
-	if (atomic_dec_return(&data->working) == 0)
-		complete(data->complete);
-
-	return rc;
-}
-
-int rtas_suspend_last_cpu(struct rtas_suspend_me_data *data)
-{
-	atomic_inc(&data->working);
-	return __rtas_suspend_last_cpu(data, 0);
-}
-
-static int __rtas_suspend_cpu(struct rtas_suspend_me_data *data, int wake_when_done)
-{
-	long rc = H_SUCCESS;
-	unsigned long msr_save;
-	int cpu;
-
-	atomic_inc(&data->working);
-
-	/* really need to ensure MSR.EE is off for H_JOIN */
-	msr_save = mfmsr();
-	mtmsr(msr_save & ~(MSR_EE));
-
-	while (rc == H_SUCCESS && !atomic_read(&data->done) && !atomic_read(&data->error))
-		rc = plpar_hcall_norets(H_JOIN);
-
-	mtmsr(msr_save);
-
-	if (rc == H_SUCCESS) {
-		/* This cpu was prodded and the suspend is complete. */
-		goto out;
-	} else if (rc == H_CONTINUE) {
-		/* All other cpus are in H_JOIN, this cpu does
-		 * the suspend.
-		 */
-		return __rtas_suspend_last_cpu(data, wake_when_done);
-	} else {
-		printk(KERN_ERR "H_JOIN on cpu %i failed with rc = %ld\n",
-		       smp_processor_id(), rc);
-		atomic_set(&data->error, rc);
-	}
-
-	if (wake_when_done) {
-		atomic_set(&data->done, 1);
-
-		/* This cpu did the suspend or got an error; in either case,
-		 * we need to prod all other other cpus out of join state.
-		 * Extra prods are harmless.
-		 */
-		for_each_online_cpu(cpu)
-			plpar_hcall_norets(H_PROD, get_hard_smp_processor_id(cpu));
-	}
-out:
-	if (atomic_dec_return(&data->working) == 0)
-		complete(data->complete);
-	return rc;
-}
-
-int rtas_suspend_cpu(struct rtas_suspend_me_data *data)
-{
-	return __rtas_suspend_cpu(data, 0);
-}
-
-static void rtas_percpu_suspend_me(void *info)
-{
-	__rtas_suspend_cpu((struct rtas_suspend_me_data *)info, 1);
-}
-
-enum rtas_cpu_state {
-	DOWN,
-	UP,
-};
-
-#ifndef CONFIG_SMP
-static int rtas_cpu_state_change_mask(enum rtas_cpu_state state,
-				cpumask_var_t cpus)
-{
-	if (!cpumask_empty(cpus)) {
-		cpumask_clear(cpus);
-		return -EINVAL;
-	} else
-		return 0;
-}
-#else
-/* On return cpumask will be altered to indicate CPUs changed.
- * CPUs with states changed will be set in the mask,
- * CPUs with status unchanged will be unset in the mask. */
-static int rtas_cpu_state_change_mask(enum rtas_cpu_state state,
-				cpumask_var_t cpus)
-{
-	int cpu;
-	int cpuret = 0;
-	int ret = 0;
-
-	if (cpumask_empty(cpus))
-		return 0;
-
-	for_each_cpu(cpu, cpus) {
-		struct device *dev = get_cpu_device(cpu);
-
-		switch (state) {
-		case DOWN:
-			cpuret = device_offline(dev);
-			break;
-		case UP:
-			cpuret = device_online(dev);
-			break;
-		}
-		if (cpuret < 0) {
-			pr_debug("%s: cpu_%s for cpu#%d returned %d.\n",
-					__func__,
-					((state == UP) ? "up" : "down"),
-					cpu, cpuret);
-			if (!ret)
-				ret = cpuret;
-			if (state == UP) {
-				/* clear bits for unchanged cpus, return */
-				cpumask_shift_right(cpus, cpus, cpu);
-				cpumask_shift_left(cpus, cpus, cpu);
-				break;
-			} else {
-				/* clear bit for unchanged cpu, continue */
-				cpumask_clear_cpu(cpu, cpus);
-			}
-		}
-		cond_resched();
-	}
-
-	return ret;
-}
-#endif
-
-int rtas_online_cpus_mask(cpumask_var_t cpus)
-{
-	int ret;
-
-	ret = rtas_cpu_state_change_mask(UP, cpus);
-
-	if (ret) {
-		cpumask_var_t tmp_mask;
-
-		if (!alloc_cpumask_var(&tmp_mask, GFP_KERNEL))
-			return ret;
-
-		/* Use tmp_mask to preserve cpus mask from first failure */
-		cpumask_copy(tmp_mask, cpus);
-		rtas_offline_cpus_mask(tmp_mask);
-		free_cpumask_var(tmp_mask);
-	}
-
-	return ret;
-}
-
-int rtas_offline_cpus_mask(cpumask_var_t cpus)
-{
-	return rtas_cpu_state_change_mask(DOWN, cpus);
-}
-
-int rtas_ibm_suspend_me(u64 handle)
-{
-	long state;
-	long rc;
-	unsigned long retbuf[PLPAR_HCALL_BUFSIZE];
-	struct rtas_suspend_me_data data;
-	DECLARE_COMPLETION_ONSTACK(done);
-	cpumask_var_t offline_mask;
-	int cpuret;
-
-	if (!rtas_service_present("ibm,suspend-me"))
-		return -ENOSYS;
-
-	/* Make sure the state is valid */
-	rc = plpar_hcall(H_VASI_STATE, retbuf, handle);
-
-	state = retbuf[0];
-
-	if (rc) {
-		printk(KERN_ERR "rtas_ibm_suspend_me: vasi_state returned %ld\n",rc);
-		return rc;
-	} else if (state == H_VASI_ENABLED) {
-		return -EAGAIN;
-	} else if (state != H_VASI_SUSPENDING) {
-		printk(KERN_ERR "rtas_ibm_suspend_me: vasi_state returned state %ld\n",
-		       state);
-		return -EIO;
-	}
-
-	if (!alloc_cpumask_var(&offline_mask, GFP_KERNEL))
-		return -ENOMEM;
-
-	atomic_set(&data.working, 0);
-	atomic_set(&data.done, 0);
-	atomic_set(&data.error, 0);
-	data.token = rtas_token("ibm,suspend-me");
-	data.complete = &done;
-
-	lock_device_hotplug();
-
-	/* All present CPUs must be online */
-	cpumask_andnot(offline_mask, cpu_present_mask, cpu_online_mask);
-	cpuret = rtas_online_cpus_mask(offline_mask);
-	if (cpuret) {
-		pr_err("%s: Could not bring present CPUs online.\n", __func__);
-		atomic_set(&data.error, cpuret);
-		goto out;
-	}
-
-	cpu_hotplug_disable();
-
-	/* Check if we raced with a CPU-Offline Operation */
-	if (!cpumask_equal(cpu_present_mask, cpu_online_mask)) {
-		pr_info("%s: Raced against a concurrent CPU-Offline\n", __func__);
-		atomic_set(&data.error, -EAGAIN);
-		goto out_hotplug_enable;
-	}
-
-	/* Call function on all CPUs.  One of us will make the
-	 * rtas call
-	 */
-	on_each_cpu(rtas_percpu_suspend_me, &data, 0);
-
-	wait_for_completion(&done);
-
-	if (atomic_read(&data.error) != 0)
-		printk(KERN_ERR "Error doing global join\n");
-
-out_hotplug_enable:
-	cpu_hotplug_enable();
-
-	/* Take down CPUs not online prior to suspend */
-	cpuret = rtas_offline_cpus_mask(offline_mask);
-	if (cpuret)
-		pr_warn("%s: Could not restore CPUs to offline state.\n",
-				__func__);
-
-out:
-	unlock_device_hotplug();
-	free_cpumask_var(offline_mask);
-	return atomic_read(&data.error);
-}
-#else /* CONFIG_PPC_PSERIES */
-int rtas_ibm_suspend_me(u64 handle)
-{
-	return -ENOSYS;
-}
-#endif
 
 /**
- * Find a specific pseries error log in an RTAS extended event log.
+ * rtas_activate_firmware() - Activate a new version of firmware.
+ *
+ * Context: This function may sleep.
+ *
+ * Activate a new version of partition firmware. The OS must call this
+ * after resuming from a partition hibernation or migration in order
+ * to maintain the ability to perform live firmware updates. It's not
+ * catastrophic for this method to be absent or to fail; just log the
+ * condition in that case.
+ */
+void rtas_activate_firmware(void)
+{
+	int token;
+	int fwrc;
+
+	token = rtas_token("ibm,activate-firmware");
+	if (token == RTAS_UNKNOWN_SERVICE) {
+		pr_notice("ibm,activate-firmware method unavailable\n");
+		return;
+	}
+
+	do {
+		fwrc = rtas_call(token, 0, 1, NULL);
+	} while (rtas_busy_delay(fwrc));
+
+	if (fwrc)
+		pr_err("ibm,activate-firmware failed (%i)\n", fwrc);
+}
+
+/**
+ * get_pseries_errorlog() - Find a specific pseries error log in an RTAS
+ *                          extended event log.
  * @log: RTAS error/event log
  * @section_id: two character section identifier
  *
- * Returns a pointer to the specified errorlog or NULL if not found.
+ * Return: A pointer to the specified errorlog or NULL if not found.
  */
-struct pseries_errorlog *get_pseries_errorlog(struct rtas_error_log *log,
-					      uint16_t section_id)
+noinstr struct pseries_errorlog *get_pseries_errorlog(struct rtas_error_log *log,
+						      uint16_t section_id)
 {
 	struct rtas_ext_event_log_v6 *ext_log =
 		(struct rtas_ext_event_log_v6 *)log->buffer;
@@ -1056,6 +1048,154 @@ struct pseries_errorlog *get_pseries_errorlog(struct rtas_error_log *log,
 	}
 
 	return NULL;
+}
+
+/*
+ * The sys_rtas syscall, as originally designed, allows root to pass
+ * arbitrary physical addresses to RTAS calls. A number of RTAS calls
+ * can be abused to write to arbitrary memory and do other things that
+ * are potentially harmful to system integrity, and thus should only
+ * be used inside the kernel and not exposed to userspace.
+ *
+ * All known legitimate users of the sys_rtas syscall will only ever
+ * pass addresses that fall within the RMO buffer, and use a known
+ * subset of RTAS calls.
+ *
+ * Accordingly, we filter RTAS requests to check that the call is
+ * permitted, and that provided pointers fall within the RMO buffer.
+ * The rtas_filters list contains an entry for each permitted call,
+ * with the indexes of the parameters which are expected to contain
+ * addresses and sizes of buffers allocated inside the RMO buffer.
+ */
+struct rtas_filter {
+	const char *name;
+	int token;
+	/* Indexes into the args buffer, -1 if not used */
+	int buf_idx1;
+	int size_idx1;
+	int buf_idx2;
+	int size_idx2;
+
+	int fixed_size;
+};
+
+static struct rtas_filter rtas_filters[] __ro_after_init = {
+	{ "ibm,activate-firmware", -1, -1, -1, -1, -1 },
+	{ "ibm,configure-connector", -1, 0, -1, 1, -1, 4096 },	/* Special cased */
+	{ "display-character", -1, -1, -1, -1, -1 },
+	{ "ibm,display-message", -1, 0, -1, -1, -1 },
+	{ "ibm,errinjct", -1, 2, -1, -1, -1, 1024 },
+	{ "ibm,close-errinjct", -1, -1, -1, -1, -1 },
+	{ "ibm,open-errinjct", -1, -1, -1, -1, -1 },
+	{ "ibm,get-config-addr-info2", -1, -1, -1, -1, -1 },
+	{ "ibm,get-dynamic-sensor-state", -1, 1, -1, -1, -1 },
+	{ "ibm,get-indices", -1, 2, 3, -1, -1 },
+	{ "get-power-level", -1, -1, -1, -1, -1 },
+	{ "get-sensor-state", -1, -1, -1, -1, -1 },
+	{ "ibm,get-system-parameter", -1, 1, 2, -1, -1 },
+	{ "get-time-of-day", -1, -1, -1, -1, -1 },
+	{ "ibm,get-vpd", -1, 0, -1, 1, 2 },
+	{ "ibm,lpar-perftools", -1, 2, 3, -1, -1 },
+	{ "ibm,platform-dump", -1, 4, 5, -1, -1 },		/* Special cased */
+	{ "ibm,read-slot-reset-state", -1, -1, -1, -1, -1 },
+	{ "ibm,scan-log-dump", -1, 0, 1, -1, -1 },
+	{ "ibm,set-dynamic-indicator", -1, 2, -1, -1, -1 },
+	{ "ibm,set-eeh-option", -1, -1, -1, -1, -1 },
+	{ "set-indicator", -1, -1, -1, -1, -1 },
+	{ "set-power-level", -1, -1, -1, -1, -1 },
+	{ "set-time-for-power-on", -1, -1, -1, -1, -1 },
+	{ "ibm,set-system-parameter", -1, 1, -1, -1, -1 },
+	{ "set-time-of-day", -1, -1, -1, -1, -1 },
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	{ "ibm,suspend-me", -1, -1, -1, -1, -1 },
+	{ "ibm,update-nodes", -1, 0, -1, -1, -1, 4096 },
+	{ "ibm,update-properties", -1, 0, -1, -1, -1, 4096 },
+#endif
+	{ "ibm,physical-attestation", -1, 0, 1, -1, -1 },
+};
+
+static bool in_rmo_buf(u32 base, u32 end)
+{
+	return base >= rtas_rmo_buf &&
+		base < (rtas_rmo_buf + RTAS_USER_REGION_SIZE) &&
+		base <= end &&
+		end >= rtas_rmo_buf &&
+		end < (rtas_rmo_buf + RTAS_USER_REGION_SIZE);
+}
+
+static bool block_rtas_call(int token, int nargs,
+			    struct rtas_args *args)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(rtas_filters); i++) {
+		struct rtas_filter *f = &rtas_filters[i];
+		u32 base, size, end;
+
+		if (token != f->token)
+			continue;
+
+		if (f->buf_idx1 != -1) {
+			base = be32_to_cpu(args->args[f->buf_idx1]);
+			if (f->size_idx1 != -1)
+				size = be32_to_cpu(args->args[f->size_idx1]);
+			else if (f->fixed_size)
+				size = f->fixed_size;
+			else
+				size = 1;
+
+			end = base + size - 1;
+
+			/*
+			 * Special case for ibm,platform-dump - NULL buffer
+			 * address is used to indicate end of dump processing
+			 */
+			if (!strcmp(f->name, "ibm,platform-dump") &&
+			    base == 0)
+				return false;
+
+			if (!in_rmo_buf(base, end))
+				goto err;
+		}
+
+		if (f->buf_idx2 != -1) {
+			base = be32_to_cpu(args->args[f->buf_idx2]);
+			if (f->size_idx2 != -1)
+				size = be32_to_cpu(args->args[f->size_idx2]);
+			else if (f->fixed_size)
+				size = f->fixed_size;
+			else
+				size = 1;
+			end = base + size - 1;
+
+			/*
+			 * Special case for ibm,configure-connector where the
+			 * address can be 0
+			 */
+			if (!strcmp(f->name, "ibm,configure-connector") &&
+			    base == 0)
+				return false;
+
+			if (!in_rmo_buf(base, end))
+				goto err;
+		}
+
+		return false;
+	}
+
+err:
+	pr_err_ratelimited("sys_rtas: RTAS call blocked - exploit attempt?\n");
+	pr_err_ratelimited("sys_rtas: token=0x%x, nargs=%d (called by %s)\n",
+			   token, nargs, current->comm);
+	return true;
+}
+
+static void __init rtas_syscall_filter_init(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(rtas_filters); i++)
+		rtas_filters[i].token = rtas_token(rtas_filters[i].name);
 }
 
 /* We assume to be passed big endian arguments */
@@ -1095,8 +1235,19 @@ SYSCALL_DEFINE1(rtas, struct rtas_args __user *, uargs)
 	args.rets = &args.args[nargs];
 	memset(args.rets, 0, nret * sizeof(rtas_arg_t));
 
+	if (block_rtas_call(token, nargs, &args))
+		return -EINVAL;
+
+	if (token == ibm_open_errinjct_token || token == ibm_errinjct_token) {
+		int err;
+
+		err = security_locked_down(LOCKDOWN_RTAS_ERROR_INJECTION);
+		if (err)
+			return err;
+	}
+
 	/* Need to handle ibm,suspend_me call specially */
-	if (token == ibm_suspend_me_token) {
+	if (token == rtas_token("ibm,suspend-me")) {
 
 		/*
 		 * rtas_ibm_suspend_me assumes the streamid handle is in cpu
@@ -1105,7 +1256,7 @@ SYSCALL_DEFINE1(rtas, struct rtas_args __user *, uargs)
 		int rc = 0;
 		u64 handle = ((u64)be32_to_cpu(args.args[0]) << 32)
 		              | be32_to_cpu(args.args[1]);
-		rc = rtas_ibm_suspend_me(handle);
+		rc = rtas_syscall_dispatch_ibm_suspend_me(handle);
 		if (rc == -EAGAIN)
 			args.rets[0] = cpu_to_be32(RTAS_NOT_SUSPENDABLE);
 		else if (rc == -EIO)
@@ -1120,7 +1271,7 @@ SYSCALL_DEFINE1(rtas, struct rtas_args __user *, uargs)
 	flags = lock_rtas();
 
 	rtas.args = args;
-	enter_rtas(__pa(&rtas.args));
+	do_enter_rtas(__pa(&rtas.args));
 	args = rtas.args;
 
 	/* A -1 return code indicates that the last command couldn't
@@ -1177,16 +1328,23 @@ void __init rtas_initialize(void)
 	no_entry = of_property_read_u32(rtas.dev, "linux,rtas-entry", &entry);
 	rtas.entry = no_entry ? rtas.base : entry;
 
+	init_error_log_max();
+
+	/*
+	 * Discover these now to avoid device tree lookups in the
+	 * panic path.
+	 */
+	if (of_property_read_bool(rtas.dev, "ibm,extended-os-term"))
+		ibm_os_term_token = rtas_token("ibm,os-term");
+
 	/* If RTAS was found, allocate the RMO buffer for it and look for
 	 * the stop-self token if any
 	 */
 #ifdef CONFIG_PPC64
-	if (firmware_has_feature(FW_FEATURE_LPAR)) {
+	if (firmware_has_feature(FW_FEATURE_LPAR))
 		rtas_region = min(ppc64_rma_size, RTAS_INSTANTIATE_MAX);
-		ibm_suspend_me_token = rtas_token("ibm,suspend-me");
-	}
 #endif
-	rtas_rmo_buf = memblock_phys_alloc_range(RTAS_RMOBUF_MAX, PAGE_SIZE,
+	rtas_rmo_buf = memblock_phys_alloc_range(RTAS_USER_REGION_SIZE, PAGE_SIZE,
 						 0, rtas_region);
 	if (!rtas_rmo_buf)
 		panic("ERROR: RTAS: Failed to allocate %lx bytes below %pa\n",
@@ -1195,6 +1353,9 @@ void __init rtas_initialize(void)
 #ifdef CONFIG_RTAS_ERROR_LOGGING
 	rtas_last_error_token = rtas_token("rtas-last-error");
 #endif
+	ibm_open_errinjct_token = rtas_token("ibm,open-errinjct");
+	ibm_errinjct_token = rtas_token("ibm,errinjct");
+	rtas_syscall_filter_init();
 }
 
 int __init early_init_dt_scan_rtas(unsigned long node,
@@ -1208,6 +1369,12 @@ int __init early_init_dt_scan_rtas(unsigned long node,
 	basep  = of_get_flat_dt_prop(node, "linux,rtas-base", NULL);
 	entryp = of_get_flat_dt_prop(node, "linux,rtas-entry", NULL);
 	sizep  = of_get_flat_dt_prop(node, "rtas-size", NULL);
+
+#ifdef CONFIG_PPC64
+	/* need this feature to decide the crashkernel offset */
+	if (of_get_flat_dt_prop(node, "ibm,hypertas-functions", NULL))
+		powerpc_firmware_features |= FW_FEATURE_LPAR;
+#endif
 
 	if (basep && entryp && sizep) {
 		rtas.base = *basep;

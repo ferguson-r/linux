@@ -61,15 +61,10 @@ static int max8997_haptic_set_duty_cycle(struct max8997_haptic *chip)
 		unsigned int duty = chip->pwm_period * chip->level / 100;
 		ret = pwm_config(chip->pwm, duty, chip->pwm_period);
 	} else {
-		int i;
 		u8 duty_index = 0;
 
-		for (i = 0; i <= 64; i++) {
-			if (chip->level <= i * 100 / 64) {
-				duty_index = i;
-				break;
-			}
-		}
+		duty_index = DIV_ROUND_UP(chip->level * 64, 100);
+
 		switch (chip->internal_mode_pattern) {
 		case 0:
 			max8997_write_reg(chip->client,
@@ -283,8 +278,7 @@ static int max8997_haptic_probe(struct platform_device *pdev)
 		break;
 
 	case MAX8997_EXTERNAL_MODE:
-		chip->pwm = pwm_request(haptic_pdata->pwm_channel_id,
-					"max8997-haptic");
+		chip->pwm = pwm_get(&pdev->dev, NULL);
 		if (IS_ERR(chip->pwm)) {
 			error = PTR_ERR(chip->pwm);
 			dev_err(&pdev->dev,
@@ -349,7 +343,7 @@ err_put_regulator:
 	regulator_put(chip->regulator);
 err_free_pwm:
 	if (chip->mode == MAX8997_EXTERNAL_MODE)
-		pwm_free(chip->pwm);
+		pwm_put(chip->pwm);
 err_free_mem:
 	input_free_device(input_dev);
 	kfree(chip);
@@ -365,7 +359,7 @@ static int max8997_haptic_remove(struct platform_device *pdev)
 	regulator_put(chip->regulator);
 
 	if (chip->mode == MAX8997_EXTERNAL_MODE)
-		pwm_free(chip->pwm);
+		pwm_put(chip->pwm);
 
 	kfree(chip);
 

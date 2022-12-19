@@ -187,6 +187,7 @@ enum da7219_aad_event_regs {
 struct da7219_aad_priv {
 	struct snd_soc_component *component;
 	int irq;
+	int gnd_switch_delay;
 
 	u8 micbias_pulse_lvl;
 	u32 micbias_pulse_time;
@@ -211,5 +212,8 @@ void da7219_aad_resume(struct snd_soc_component *component);
 /* Init/Exit */
 int da7219_aad_init(struct snd_soc_component *component);
 void da7219_aad_exit(struct snd_soc_component *component);
+
+/* I2C Probe */
+int da7219_aad_probe(struct i2c_client *i2c);
 
 #endif /* __DA7219_AAD_H */

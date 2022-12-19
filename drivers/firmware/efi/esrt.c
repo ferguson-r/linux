@@ -146,6 +146,8 @@ static struct attribute *esre1_attrs[] = {
 	&esre_last_attempt_status.attr,
 	NULL
 };
+ATTRIBUTE_GROUPS(esre1);
+
 static void esre_release(struct kobject *kobj)
 {
 	struct esre_entry *entry = to_entry(kobj);
@@ -157,7 +159,7 @@ static void esre_release(struct kobject *kobj)
 static struct kobj_type esre1_ktype = {
 	.release = esre_release,
 	.sysfs_ops = &esre_attr_ops,
-	.default_attrs = esre1_attrs,
+	.default_groups = esre1_groups,
 };
 
 
@@ -181,7 +183,7 @@ static int esre_create_sysfs_entry(void *esre, int entry_num)
 		rc = kobject_init_and_add(&entry->kobj, &esre1_ktype, NULL,
 					  "entry%d", entry_num);
 		if (rc) {
-			kfree(entry);
+			kobject_put(&entry->kobj);
 			return rc;
 		}
 	}

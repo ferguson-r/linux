@@ -125,11 +125,9 @@ static irqreturn_t hd3ss3220_irq(struct hd3ss3220 *hd3ss3220)
 	int err;
 
 	hd3ss3220_set_role(hd3ss3220);
-	err = regmap_update_bits_base(hd3ss3220->regmap,
-				      HD3SS3220_REG_CN_STAT_CTRL,
-				      HD3SS3220_REG_CN_STAT_CTRL_INT_STATUS,
-				      HD3SS3220_REG_CN_STAT_CTRL_INT_STATUS,
-				      NULL, false, true);
+	err = regmap_write_bits(hd3ss3220->regmap, HD3SS3220_REG_CN_STAT_CTRL,
+				HD3SS3220_REG_CN_STAT_CTRL_INT_STATUS,
+				HD3SS3220_REG_CN_STAT_CTRL_INT_STATUS);
 	if (err < 0)
 		return IRQ_NONE;
 
@@ -150,12 +148,11 @@ static const struct regmap_config config = {
 	.max_register = 0x0A,
 };
 
-static int hd3ss3220_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int hd3ss3220_probe(struct i2c_client *client)
 {
 	struct typec_capability typec_cap = { };
 	struct hd3ss3220 *hd3ss3220;
-	struct fwnode_handle *connector;
+	struct fwnode_handle *connector, *ep;
 	int ret;
 	unsigned int data;
 
@@ -173,11 +170,21 @@ static int hd3ss3220_probe(struct i2c_client *client,
 
 	hd3ss3220_set_source_pref(hd3ss3220,
 				  HD3SS3220_REG_GEN_CTRL_SRC_PREF_DRP_DEFAULT);
+	/* For backward compatibility check the connector child node first */
 	connector = device_get_named_child_node(hd3ss3220->dev, "connector");
-	if (!connector)
-		return -ENODEV;
+	if (connector) {
+		hd3ss3220->role_sw = fwnode_usb_role_switch_get(connector);
+	} else {
+		ep = fwnode_graph_get_next_endpoint(dev_fwnode(hd3ss3220->dev), NULL);
+		if (!ep)
+			return -ENODEV;
+		connector = fwnode_graph_get_remote_port_parent(ep);
+		fwnode_handle_put(ep);
+		if (!connector)
+			return -ENODEV;
+		hd3ss3220->role_sw = usb_role_switch_get(hd3ss3220->dev);
+	}
 
-	hd3ss3220->role_sw = fwnode_usb_role_switch_get(connector);
 	if (IS_ERR(hd3ss3220->role_sw)) {
 		ret = PTR_ERR(hd3ss3220->role_sw);
 		goto err_put_fwnode;
@@ -237,14 +244,12 @@ err_put_fwnode:
 	return ret;
 }
 
-static int hd3ss3220_remove(struct i2c_client *client)
+static void hd3ss3220_remove(struct i2c_client *client)
 {
 	struct hd3ss3220 *hd3ss3220 = i2c_get_clientdata(client);
 
 	typec_unregister_port(hd3ss3220->port);
 	usb_role_switch_put(hd3ss3220->role_sw);
-
-	return 0;
 }
 
 static const struct of_device_id dev_ids[] = {
@@ -258,7 +263,7 @@ static struct i2c_driver hd3ss3220_driver = {
 		.name = "hd3ss3220",
 		.of_match_table = of_match_ptr(dev_ids),
 	},
-	.probe = hd3ss3220_probe,
+	.probe_new = hd3ss3220_probe,
 	.remove =  hd3ss3220_remove,
 };
 

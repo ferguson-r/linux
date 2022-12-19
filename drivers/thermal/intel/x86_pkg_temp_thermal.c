@@ -17,8 +17,10 @@
 #include <linux/pm.h>
 #include <linux/thermal.h>
 #include <linux/debugfs.h>
+
 #include <asm/cpu_device_id.h>
-#include <asm/mce.h>
+
+#include "thermal_interrupt.h"
 
 /*
 * Rate control delay: Idea is to introduce denounce effect
@@ -103,7 +105,7 @@ static struct zone_device *pkg_temp_thermal_get_dev(unsigned int cpu)
 }
 
 /*
-* tj-max is is interesting because threshold is set relative to this
+* tj-max is interesting because threshold is set relative to this
 * temperature.
 */
 static int get_tj_max(int cpu, u32 *tj_max)
@@ -164,7 +166,7 @@ static int sys_get_trip_temp(struct thermal_zone_device *tzd,
 	if (thres_reg_value)
 		*temp = zonedev->tj_max - thres_reg_value * 1000;
 	else
-		*temp = 0;
+		*temp = THERMAL_TEMP_INVALID;
 	pr_debug("sys_get_trip_temp %d\n", *temp);
 
 	return 0;
@@ -263,7 +265,6 @@ static void pkg_temp_thermal_threshold_work_fn(struct work_struct *work)
 	struct thermal_zone_device *tzone = NULL;
 	int cpu = smp_processor_id();
 	struct zone_device *zonedev;
-	u64 msr_val, wr_val;
 
 	mutex_lock(&thermal_zone_mutex);
 	raw_spin_lock_irq(&pkg_temp_lock);
@@ -277,12 +278,8 @@ static void pkg_temp_thermal_threshold_work_fn(struct work_struct *work)
 	}
 	zonedev->work_scheduled = false;
 
-	rdmsrl(MSR_IA32_PACKAGE_THERM_STATUS, msr_val);
-	wr_val = msr_val & ~(THERM_LOG_THRESHOLD0 | THERM_LOG_THRESHOLD1);
-	if (wr_val != msr_val) {
-		wrmsrl(MSR_IA32_PACKAGE_THERM_STATUS, wr_val);
-		tzone = zonedev->tzone;
-	}
+	thermal_clear_package_intr_status(PACKAGE_LEVEL, THERM_LOG_THRESHOLD0 | THERM_LOG_THRESHOLD1);
+	tzone = zonedev->tzone;
 
 	enable_pkg_thres_interrupt();
 	raw_spin_unlock_irq(&pkg_temp_lock);
@@ -360,6 +357,12 @@ static int pkg_temp_thermal_device_add(unsigned int cpu)
 			zonedev, &tzone_ops, &pkg_temp_tz_params, 0, 0);
 	if (IS_ERR(zonedev->tzone)) {
 		err = PTR_ERR(zonedev->tzone);
+		kfree(zonedev);
+		return err;
+	}
+	err = thermal_zone_device_enable(zonedev->tzone);
+	if (err) {
+		thermal_zone_device_unregister(zonedev->tzone);
 		kfree(zonedev);
 		return err;
 	}

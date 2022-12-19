@@ -6,6 +6,7 @@
 #ifndef __INTEL_GLOBAL_STATE_H__
 #define __INTEL_GLOBAL_STATE_H__
 
+#include <linux/kref.h>
 #include <linux/list.h>
 
 struct drm_i915_private;
@@ -26,7 +27,7 @@ struct intel_global_obj {
 };
 
 #define intel_for_each_global_obj(obj, dev_priv) \
-	list_for_each_entry(obj, &(dev_priv)->global_obj_list, head)
+	list_for_each_entry(obj, &(dev_priv)->display.global.obj_list, head)
 
 #define for_each_new_global_obj_in_state(__state, obj, new_obj_state, __i) \
 	for ((__i) = 0; \
@@ -54,7 +55,9 @@ struct intel_global_obj {
 		for_each_if(obj)
 
 struct intel_global_state {
+	struct intel_global_obj *obj;
 	struct intel_atomic_state *state;
+	struct kref ref;
 	bool changed;
 };
 

@@ -75,8 +75,8 @@ struct synth_kbd_keystroke {
 
 #define HK_MAXIMUM_MESSAGE_SIZE 256
 
-#define KBD_VSC_SEND_RING_BUFFER_SIZE		(40 * 1024)
-#define KBD_VSC_RECV_RING_BUFFER_SIZE		(40 * 1024)
+#define KBD_VSC_SEND_RING_BUFFER_SIZE	VMBUS_RING_SIZE(36 * 1024)
+#define KBD_VSC_RECV_RING_BUFFER_SIZE	VMBUS_RING_SIZE(36 * 1024)
 
 #define XTKBD_EMUL0     0xe0
 #define XTKBD_EMUL1     0xe1
@@ -334,9 +334,9 @@ static int hv_kbd_probe(struct hv_device *hv_dev,
 	hv_serio->dev.parent  = &hv_dev->device;
 	hv_serio->id.type = SERIO_8042_XL;
 	hv_serio->port_data = kbd_dev;
-	strlcpy(hv_serio->name, dev_name(&hv_dev->device),
+	strscpy(hv_serio->name, dev_name(&hv_dev->device),
 		sizeof(hv_serio->name));
-	strlcpy(hv_serio->phys, dev_name(&hv_dev->device),
+	strscpy(hv_serio->phys, dev_name(&hv_dev->device),
 		sizeof(hv_serio->phys));
 
 	hv_serio->start = hv_kbd_start;

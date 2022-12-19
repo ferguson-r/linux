@@ -28,7 +28,7 @@ static char *ns_dname(struct dentry *dentry, char *buffer, int buflen)
 	struct inode *inode = d_inode(dentry);
 	const struct proc_ns_operations *ns_ops = dentry->d_fsdata;
 
-	return dynamic_dname(dentry, buffer, buflen, "%s:[%lu]",
+	return dynamic_dname(buffer, buflen, "%s:[%lu]",
 		ns_ops->name, inode->i_ino);
 }
 
@@ -227,6 +227,11 @@ int ns_get_name(char *buf, size_t size, struct task_struct *task,
 		ns_ops->put(ns);
 	}
 	return res;
+}
+
+bool proc_ns_file(const struct file *file)
+{
+	return file->f_op == &ns_file_operations;
 }
 
 struct file *proc_ns_fget(int fd)
