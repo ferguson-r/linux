@@ -45,7 +45,7 @@ static int mtk_pinmux_set_mux(struct pinctrl_dev *pctldev,
 	struct mtk_pinctrl *hw = pinctrl_dev_get_drvdata(pctldev);
 	struct function_desc *func;
 	struct group_desc *grp;
-	int i;
+	int i, err;
 
 	func = pinmux_generic_get_function(pctldev, selector);
 	if (!func)
@@ -67,8 +67,11 @@ static int mtk_pinmux_set_mux(struct pinctrl_dev *pctldev,
 		if (!desc->name)
 			return -ENOTSUPP;
 
-		mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_MODE,
-				 pin_modes[i]);
+		err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_MODE,
+				       pin_modes[i]);
+
+		if (err)
+			return err;
 	}
 
 	return 0;
@@ -574,7 +577,6 @@ static int mtk_build_gpiochip(struct mtk_pinctrl *hw)
 	chip->set_config	= mtk_gpio_set_config;
 	chip->base		= -1;
 	chip->ngpio		= hw->soc->npins;
-	chip->of_gpio_n_cells	= 2;
 
 	ret = gpiochip_add_data(chip, hw);
 	if (ret < 0)
@@ -587,7 +589,7 @@ static int mtk_build_gpiochip(struct mtk_pinctrl *hw)
 	 * Documentation/devicetree/bindings/gpio/gpio.txt on how to
 	 * bind pinctrl and gpio drivers via the "gpio-ranges" property.
 	 */
-	if (!of_find_property(hw->dev->of_node, "gpio-ranges", NULL)) {
+	if (!of_property_present(hw->dev->of_node, "gpio-ranges")) {
 		ret = gpiochip_add_pin_range(chip, dev_name(hw->dev), 0, 0,
 					     chip->ngpio);
 		if (ret < 0) {

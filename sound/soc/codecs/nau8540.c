@@ -16,7 +16,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 #include <linux/slab.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -890,7 +890,7 @@ static struct i2c_driver nau8540_i2c_driver = {
 		.name = "nau8540",
 		.of_match_table = of_match_ptr(nau8540_of_ids),
 	},
-	.probe_new = nau8540_i2c_probe,
+	.probe = nau8540_i2c_probe,
 	.id_table = nau8540_i2c_ids,
 };
 module_i2c_driver(nau8540_i2c_driver);

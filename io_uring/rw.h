@@ -22,3 +22,6 @@ int io_write(struct io_kiocb *req, unsigned int issue_flags);
 int io_writev_prep_async(struct io_kiocb *req);
 void io_readv_writev_cleanup(struct io_kiocb *req);
 void io_rw_fail(struct io_kiocb *req);
+void io_req_rw_complete(struct io_kiocb *req, struct io_tw_state *ts);
+int io_read_mshot_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
+int io_read_mshot(struct io_kiocb *req, unsigned int issue_flags);

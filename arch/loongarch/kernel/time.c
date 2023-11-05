@@ -29,7 +29,7 @@ static void constant_event_handler(struct clock_event_device *dev)
 {
 }
 
-irqreturn_t constant_timer_interrupt(int irq, void *data)
+static irqreturn_t constant_timer_interrupt(int irq, void *data)
 {
 	int cpu = smp_processor_id();
 	struct clock_event_device *cd;
@@ -133,23 +133,24 @@ static int get_timer_irq(void)
 	struct irq_domain *d = irq_find_matching_fwnode(cpuintc_handle, DOMAIN_BUS_ANY);
 
 	if (d)
-		return irq_create_mapping(d, EXCCODE_TIMER - EXCCODE_INT_START);
+		return irq_create_mapping(d, INT_TI);
 
 	return -EINVAL;
 }
 
 int constant_clockevent_init(void)
 {
-	int irq;
 	unsigned int cpu = smp_processor_id();
 	unsigned long min_delta = 0x600;
 	unsigned long max_delta = (1UL << 48) - 1;
 	struct clock_event_device *cd;
-	static int timer_irq_installed = 0;
+	static int irq = 0, timer_irq_installed = 0;
 
-	irq = get_timer_irq();
-	if (irq < 0)
-		pr_err("Failed to map irq %d (timer)\n", irq);
+	if (!timer_irq_installed) {
+		irq = get_timer_irq();
+		if (irq < 0)
+			pr_err("Failed to map irq %d (timer)\n", irq);
+	}
 
 	cd = &per_cpu(constant_clockevent_device, cpu);
 
@@ -189,9 +190,9 @@ static u64 read_const_counter(struct clocksource *clk)
 	return drdtime();
 }
 
-static u64 native_sched_clock(void)
+static noinstr u64 sched_clock_read(void)
 {
-	return read_const_counter(NULL);
+	return drdtime();
 }
 
 static struct clocksource clocksource_const = {
@@ -210,7 +211,7 @@ int __init constant_clocksource_init(void)
 
 	res = clocksource_register_hz(&clocksource_const, freq);
 
-	sched_clock_register(native_sched_clock, 64, freq);
+	sched_clock_register(sched_clock_read, 64, freq);
 
 	pr_info("Constant clock source device register\n");
 

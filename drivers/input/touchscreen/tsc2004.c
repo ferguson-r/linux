@@ -65,10 +65,10 @@ static struct i2c_driver tsc2004_driver = {
 	.driver = {
 		.name   = "tsc2004",
 		.of_match_table = of_match_ptr(tsc2004_of_match),
-		.pm     = &tsc200x_pm_ops,
+		.pm     = pm_sleep_ptr(&tsc200x_pm_ops),
 	},
 	.id_table       = tsc2004_idtable,
-	.probe_new      = tsc2004_probe,
+	.probe          = tsc2004_probe,
 	.remove         = tsc2004_remove,
 };
 module_i2c_driver(tsc2004_driver);
