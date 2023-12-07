@@ -419,6 +419,7 @@ enum smu_reset_mode {
 enum smu_baco_state {
 	SMU_BACO_STATE_ENTER = 0,
 	SMU_BACO_STATE_EXIT,
+	SMU_BACO_STATE_NONE,
 };
 
 struct smu_baco_context {
@@ -1359,6 +1360,11 @@ struct pptable_funcs {
 	 *                       management.
 	 */
 	int (*dpm_set_umsch_mm_enable)(struct smu_context *smu, bool enable);
+
+	/**
+	 * @notify_rlc_state: Notify RLC power state to SMU.
+	 */
+	int (*notify_rlc_state)(struct smu_context *smu, bool en);
 };
 
 typedef enum {

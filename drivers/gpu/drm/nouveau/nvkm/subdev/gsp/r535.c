@@ -365,10 +365,8 @@ r535_gsp_rpc_send(struct nvkm_gsp *gsp, void *argv, bool wait, u32 repc)
 	}
 
 	ret = r535_gsp_cmdq_push(gsp, rpc);
-	if (ret) {
-		mutex_unlock(&gsp->cmdq.mutex);
+	if (ret)
 		return ERR_PTR(ret);
-	}
 
 	if (wait) {
 		msg = r535_gsp_msg_recv(gsp, fn, repc);
@@ -689,8 +687,8 @@ r535_gsp_rpc_get(struct nvkm_gsp *gsp, u32 fn, u32 argc)
 	struct nvfw_gsp_rpc *rpc;
 
 	rpc = r535_gsp_cmdq_get(gsp, ALIGN(sizeof(*rpc) + argc, sizeof(u64)));
-	if (!rpc)
-		return NULL;
+	if (IS_ERR(rpc))
+		return ERR_CAST(rpc);
 
 	rpc->header_version = 0x03000000;
 	rpc->signature = ('C' << 24) | ('P' << 16) | ('R' << 8) | 'V';
@@ -1048,7 +1046,7 @@ r535_gsp_rpc_set_registry(struct nvkm_gsp *gsp)
 	char *strings;
 	int str_offset;
 	int i;
-	size_t rpc_size = sizeof(*rpc) + sizeof(rpc->entries[0]) * NV_GSP_REG_NUM_ENTRIES;
+	size_t rpc_size = struct_size(rpc, entries, NV_GSP_REG_NUM_ENTRIES);
 
 	/* add strings + null terminator */
 	for (i = 0; i < NV_GSP_REG_NUM_ENTRIES; i++)
@@ -1159,7 +1157,7 @@ static void
 r535_gsp_acpi_mux_id(acpi_handle handle, u32 id, MUX_METHOD_DATA_ELEMENT *mode,
 						 MUX_METHOD_DATA_ELEMENT *part)
 {
-	acpi_handle iter = NULL, handle_mux;
+	acpi_handle iter = NULL, handle_mux = NULL;
 	acpi_status status;
 	unsigned long long value;
 
